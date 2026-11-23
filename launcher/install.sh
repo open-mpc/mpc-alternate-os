@@ -2,7 +2,7 @@
 # Copies the launcher, the remote addin and one app to a device. Stops nothing.
 #   ./install.sh HOST                       the launcher, the remote addin and the app picker
 #   ./install.sh HOST APP BINARY [CONF]     also the app: BINARY into apps/APP/bin/, CONF (default apps/APP.conf) as app.conf
-# HOST is user@address (the Live III: root@192.168.2.217). The remote addin comes from $REMOTE_SO, default
+# HOST is user@address (the Live III: root@HOST-ADDRESS). The remote addin comes from $REMOTE_SO, default
 # ~/mpc-addin-remote/build/aarch64/mpc_remote_addin.so (branch standalone-apps).
 set -eu
 HOST=${1:?host}
