@@ -1,0 +1,7 @@
+ADDIN_ID=openmpc-launcher
+ADDIN_NAME="OpenMPC Launcher"
+ADDIN_SO=modeslot.so
+ADDIN_CONF=""
+ADDIN_FILES="launcher-page pm-app-start.sh page.png icon.png"
+ADDIN_NETWORK=0
+ADDIN_DONE="MENU now has a tile that lists the apps installed for mpc-launch (/data/mpc-launcher/apps) and runs the one you tap. MPC OS 3.10.1 only. Install Addin Restore too, or the tile is gone after a reboot. Remove the Plugin Manager App first: both use the one mode slot shim."
