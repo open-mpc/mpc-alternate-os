@@ -21,3 +21,5 @@ Rules every app should follow:
 6. **Do not edit MPC's files.** Nothing here changes MPC; an app only runs while MPC is stopped.
 
 Reusable hardware layer: sample-base (branch `live3`) already has the Live III screen, sound, touch, pads and lights.
+
+The launcher is part of this repo (`launcher/`); install it with `launcher/install.sh`.
