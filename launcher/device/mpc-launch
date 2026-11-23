@@ -1,0 +1,161 @@
+#!/bin/sh
+# mpc-launch: run custom apps in place of the stock MPC app on an MPC OS standalone device, and always give the
+# device back. Runs on the device, as root.
+#
+#   mpc-launch list                     the installed apps (/data/mpc-launcher/apps/*/app.conf)
+#   mpc-launch menu                     a session: stop the stock app once, show the app picker; leaving an app shows
+#                                       the picker again, its "Back to MPC" (or MAIN) ends the session
+#   mpc-launch start APP [SECONDS]      self-test, stop the stock app, run APP; the stock app starts again after it
+#   mpc-launch stop                     end the running app or session (the stock app starts again)
+#   mpc-launch status                   what runs, the stock app, the last log lines
+#
+# Every app runs with the remote addin preloaded (mpc-addin-remote with MPC_REMOTE_ADDIN_PROCESS support), on the
+# port MPC's own addin uses, so the same tunnel and tools see and drive whichever is running. The stock app comes
+# back however it ends: an app's own exit, the SECONDS deadline (0 = none), a crash (ExecStopPost), or `stop`.
+# Nothing is written outside /data/mpc-launcher, /run/mpc-launcher and the folders an app's BIND names.
+#
+# An app is a folder /data/mpc-launcher/apps/NAME with an app.conf of shell assignments:
+#   TITLE="Melodee"                  the name the picker shows (default: the folder's name)
+#   EXEC=bin/melodee                 the binary, relative to the folder (required)
+#   ARGS="--runtime-dir /run/mpc-launcher/NAME"   its arguments; "@SECONDS@" becomes the deadline (0 in a session)
+#   SELF_TEST="--self-test /run/mpc-launcher/self-test.wav"   run before the stock app stops; empty skips it
+#   BIND="/nvme/MelodeeCard:/media/card
+#   /nvme/VST2 Plugins:/media/card/Melodee/Plugins/MPC:ro"
+#                                    folders the app alone sees elsewhere, one SOURCE:TARGET[:ro] a line (spaces are
+#                                    fine; :ro = read-only). A SOURCE is made if missing, and so is a TARGET inside
+#                                    another pair's TARGET (in that pair's SOURCE). An app made for an SD card finds
+#                                    one, with nothing changed for MPC.
+# The picker itself is /data/mpc-launcher/menu/sample-base (`--app menu`, sample-base branch live3).
+set -u
+ROOT=/data/mpc-launcher
+RUN=/run/mpc-launcher
+UNIT=mpc-launcher-app
+LOG=$RUN/app.log
+MENU=$ROOT/menu/sample-base
+
+# The device: which stock service to stop and which surface port the remote addin hooks.
+device() {
+    MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)
+    case "$MODEL" in
+    *"MPC Live III"*) STOCK=acvs.service; SURFACE=Public ;;
+    *) if systemctl cat ac50.service >/dev/null 2>&1; then STOCK=ac50.service; SURFACE=Private   # MPC Sample
+       else STOCK=acvs.service; SURFACE=Private; fi ;;
+    esac
+}
+
+# Reads apps/$1/app.conf into DIR, BIN, EXEC, ARGS, SELF_TEST, BIND, TITLE. False when the app is missing.
+load_app() {
+    DIR=$ROOT/apps/$1
+    [ -f "$DIR/app.conf" ] || { echo "no app $1 (mpc-launch list)"; return 1; }
+    TITLE=; EXEC=; ARGS=; SELF_TEST=; BIND=
+    . "$DIR/app.conf"
+    BIN=$DIR/$EXEC
+    [ -x "$BIN" ] || { echo "no binary $BIN"; return 1; }
+}
+
+# The app's self-test, while the stock app still runs.
+self_test() {
+    [ -z "$2" ] && return 0
+    "$1" $2 > $RUN/self-test.log 2>&1 && return 0
+    echo "self-test of $1 failed; the stock app keeps running"; tail -n 20 $RUN/self-test.log; return 1
+}
+
+# BIND lines -> folders made, and one systemd-run property each in the positional parameters' place: prints the
+# properties one a line (bind_props), for run_unit to read back.
+bind_props() {
+    echo "$1" | while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        src=${line%%:*}; rest=${line#*:}; dst=${rest%%:*}; opt=${rest#"$dst"}
+        mkdir -p "$src"
+        # A target inside another pair's target: its mount point is made in that pair's source.
+        echo "$1" | while IFS= read -r other; do
+            osrc=${other%%:*}; orest=${other#*:}; odst=${orest%%:*}
+            case "$dst" in "$odst"/*) mkdir -p "$osrc/${dst#"$odst"/}" ;; esac
+        done
+        # Each side quoted on its own: systemd reads a quoted "a:b" as one path.
+        if [ "$opt" = ":ro" ]; then echo "BindReadOnlyPaths=\"$src\":\"$dst\""; else echo "BindPaths=\"$src\":\"$dst\""; fi
+    done
+}
+
+# systemd-run the unit: the stock app stops before and starts after, whatever happens in between.
+run_unit() { # BIND lines, then the command
+    PROPS=$(bind_props "$1"); shift
+    # One --property per bind, inserted ahead of the command.
+    if [ -n "$PROPS" ]; then
+        OLD_IFS=$IFS; IFS='
+'
+        set -- $(echo "$PROPS" | sed 's/^/--property=/') "$@"
+        IFS=$OLD_IFS
+    fi
+    systemctl reset-failed $UNIT 2>/dev/null
+    : > $LOG   # systemd appends to an existing file: each run starts with an empty log
+    systemd-run --unit=$UNIT --collect \
+        --property=ExecStartPre="/bin/systemctl stop $STOCK" \
+        --property=ExecStopPost="/bin/systemctl start $STOCK" \
+        --property=StandardOutput=file:$LOG --property=StandardError=file:$LOG \
+        --setenv=LD_PRELOAD=$ROOT/remote/mpc_remote_addin.so \
+        --setenv=MPC_REMOTE_ADDIN_SURFACE=$SURFACE \
+        --setenv=MPC_REMOTE_ADDIN_CONF=$ROOT/remote/mpc_remote_addin.conf \
+        "$@"
+}
+
+case "${1:-}" in
+list)
+    for c in "$ROOT"/apps/*/app.conf; do [ -f "$c" ] && basename "$(dirname "$c")"; done
+    ;;
+start)
+    APP=${2:?app name}; DEADLINE=${3:-0}
+    load_app "$APP" || exit 1
+    if systemctl is-active --quiet $UNIT; then echo "an app is already running (mpc-launch stop)"; exit 1; fi
+    device; mkdir -p $RUN
+    self_test "$BIN" "$SELF_TEST" || exit 1
+    echo "$APP" > $RUN/app
+    # shellcheck disable=SC2086 # ARGS is split on purpose
+    run_unit "$BIND" --working-directory="$DIR" --setenv=MPC_REMOTE_ADDIN_PROCESS="$(basename "$EXEC")" \
+        "$BIN" $(printf %s "$ARGS" | sed "s/@SECONDS@/$DEADLINE/g")
+    ;;
+menu)
+    [ -x "$MENU" ] || { echo "no picker at $MENU (install.sh installs it)"; exit 1; }
+    if systemctl is-active --quiet $UNIT; then echo "already running (mpc-launch stop)"; exit 1; fi
+    device; mkdir -p $RUN
+    self_test "$MENU" "--self-test $RUN/self-test.wav" || exit 1
+    # Every app's private folders, made once for the whole session.
+    ALL=
+    for c in "$ROOT"/apps/*/app.conf; do
+        [ -f "$c" ] || continue
+        BIND=; . "$c"; [ -n "$BIND" ] && ALL="$ALL
+$BIND"
+    done
+    echo menu > $RUN/app
+    run_unit "$ALL" --working-directory=$ROOT /bin/sh "$ROOT/mpc-launch" session
+    ;;
+session)
+    # Inside the unit (see menu): the picker, then the chosen app, then the picker again.
+    while true; do
+        echo menu > $RUN/app
+        rm -f $RUN/choice
+        MPC_REMOTE_ADDIN_PROCESS=sample-base MPC_LAUNCHER_APPS=$ROOT/apps MPC_LAUNCHER_CHOICE=$RUN/choice \
+            "$MENU" --app menu --runtime-dir $RUN/menu
+        [ -s $RUN/choice ] || break   # Back to MPC
+        APP=$(cat $RUN/choice)
+        load_app "$APP" || continue
+        echo "$APP" > $RUN/app
+        echo "--- $APP"
+        # shellcheck disable=SC2086 # ARGS is split on purpose
+        (cd "$DIR" && MPC_REMOTE_ADDIN_PROCESS="$(basename "$EXEC")" exec "$BIN" $(printf %s "$ARGS" | sed "s/@SECONDS@/0/g"))
+        echo "--- $APP ended ($?)"
+    done
+    ;;
+stop)
+    systemctl stop $UNIT
+    ;;
+status)
+    device
+    if systemctl is-active --quiet $UNIT; then echo "running: $(cat $RUN/app 2>/dev/null)"; else echo "running: none"; fi
+    echo "stock ($STOCK): $(systemctl is-active $STOCK)"
+    [ -f $LOG ] && tail -n 15 $LOG
+    ;;
+*)
+    sed -n 2,26p "$0"; exit 2
+    ;;
+esac
