@@ -6,7 +6,7 @@
 | Minimal app (DRM screen, life cycle) | `template/` | MIT | Runs on the Live III |
 | Hardware layer: screen, touch, sound, pads, buttons, lights, step keys, Q-Links | sample-base, branch `live3` | AGPL-3.0 | Live III done; Force not yet |
 | Build image for arm64 | sample-base `tools/Dockerfile` (Debian bookworm, under QEMU) | AGPL-3.0 | Used for every build |
-| Example of a full app | `examples/melodee-groove/` (description) | AGPL-3.0 | Phase 3 of its own plan |
+| Example of a full app | `examples/melodee-groove/` (description) | AGPL-3.0 | In progress |
 | Remote control: screenshots, taps, button presses, MCP | mpc-addin-remote (preloaded by the launcher) | | Works with every app |
 
 Not here yet: a documented app API for sample-base, a shared UI kit for the 1280 x 800 screen, Force support,
